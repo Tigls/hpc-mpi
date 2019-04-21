@@ -1,120 +1,100 @@
-#include <mpi.h>
-#include <stdlib.h>
 #include <stdio.h>
-#include <stdbool.h>
 #include <math.h>
+#include <stdbool.h>
+#include <mpi.h>
 
-const double EPSILON = 1E-8;
-const int VALUE_TAG = 1;
-const int TERM_NUMBER_TAG = 2;
-const int TERM_TAG = 3;
-const int BREAK_TAG = 4;
-const char* input_file_name = "in.txt";
-const char* output_file_name = "out.txt";
+double function(double x)
+{
+    return 5 * x - pow(sin(x), 2);
+}
 
-double factorial(int value) {
-    if (value < 0) {
-        return NAN;
-    }
-    else if (value == 0) {
-        return 1;
-    }
-    else {
-        double fact = 1;
-        for (int i = 2; i <= value; i++) {
-            fact *= i;
+bool check_Runge(double I2, double I, double epsilon)
+{
+    return (fabs(I2 - I) / 3.) < epsilon;
+}
+
+double integrate_left_rectangle(double start, double finish, double epsilon)
+{
+    int num_iterations = 1;
+    double last_res = 0.;
+    double res = -1.;
+    double h = 0;
+    while (!check_Runge(res, last_res, epsilon))
+    {
+        num_iterations *= 2;
+        last_res = res;
+        res = 0.;
+        double term2 = 0.;
+        double term3 = 0.;
+        h = (finish - start) / num_iterations;
+        double term1 = function(start);
+        for (int i = 1; i < num_iterations; i+=2)
+        {
+            term2 += function(start + i * h);
+            term3 += function(start + (i+1) * h);
         }
-        return fact;
+        res += h / 3 * (term1 + 4*term2 + 2*term3);
     }
+    return res;
 }
 
-double calc_series_term(int term_number, double value) {
-    int k = 2 * term_number + 1;
-    return (pow(-1, term_number) / factorial(k)) * pow(value, k);
+void write_double_to_file(const char* filename, double data)
+{
+    FILE* fp = fopen(filename, "w");
+    if (fp == NULL)
+    {
+        printf("Failed to open the file\n");
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    fprintf(fp, " % lg\n", data);
+    fclose(fp);
 }
-
-int main(int argc, char* argv[]) {
-    MPI_Init(&argc, &argv);
-    int rank;
+int main(int argc, char* argv[])
+{
     int np;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    int rank;
+    MPI_Init(&argc, &argv);
     MPI_Comm_size(MPI_COMM_WORLD, &np);
-    double exponent;
-    if (rank == 0) {
-        FILE* input_file = fopen(input_file_name, "r");
-        if (!input_file) {
-            fprintf(stderr, "Can't open input file! \n\n");
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    double input[3];
+    if (rank == 0)
+    {
+        FILE* fp = fopen("in.txt", "r");
+        if (fp == NULL)
+        {
+            printf("Failed to open the file\n");
             MPI_Abort(MPI_COMM_WORLD, 1);
-            return 1;
         }
-        fscanf(input_file, "%lf", &exponent);
-        fclose(input_file);
+        for (int i = 0; i < 3; i++)
+            fscanf(fp, " %lg", &input[i]);
+        fclose(fp);
     }
-    if (rank == 0) {
-        for (int i = 1; i < np; i++) {
-            MPI_Send(&exponent, 1, MPI_DOUBLE, i, VALUE_TAG, MPI_COMM_WORLD);
-        }
+    MPI_Bcast(input, 3, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    double start = input[0];
+    double finish = input[1];
+    double epsilon = input[2];
+    double step = (finish - start) / np;
+    double res = integrate_left_rectangle(start + rank * step, start +
+                                                               (rank + 1) * step, epsilon / np);
+    if (rank != 0)
+    {
+        MPI_Send(&res, 1, MPI_DOUBLE, 0, rank, MPI_COMM_WORLD);
     }
-    else {
-        MPI_Recv(&exponent, 1, MPI_DOUBLE, 0, VALUE_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    }
-    int last_term_number = 0;
-    double sum = .0;
-    for (int step = 0; step < 1000; step++) {
-        int term_number;
-        if (rank == 0) {
-            term_number = last_term_number++;
-            int current_term_number = last_term_number;
-            for (int i = 1; i < np; i++) {
-                MPI_Send(&current_term_number, 1, MPI_INT, i, TERM_NUMBER_TAG, MPI_COMM_WORLD);
-                current_term_number++;
-            }
-            last_term_number = current_term_number;
+    if (rank == 0)
+    {
+        MPI_Request recv_reqs[np-1]; // np - 1
+        MPI_Status status[np-1];
+        double resall[np-1];
+        for (int i = 0; i < (np - 1); i++)
+        {
+            MPI_Irecv(&resall[i], 1, MPI_DOUBLE, (i + 1), (i + 1), MPI_COMM_WORLD, &recv_reqs[i]);
         }
-        else {
-            MPI_Recv(&term_number, 1, MPI_INT, 0, TERM_NUMBER_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        MPI_Waitall(np - 1, recv_reqs, status);
+        for (int i = 0; i < (np - 1); i++)
+        {
+            res += resall[i];
         }
-        double term = calc_series_term(term_number, exponent);
-        if (term_number == 0 || term_number == 1) {
-            printf("%.1lf\n", term);
-        }
-        int need_break = false;
-        if (rank == 0) {
-            double current_term = term;
-            sum += current_term;
-            if (current_term < EPSILON) {
-                need_break = true;
-            }
-            for (int i = 1; i < np; i++) {
-                MPI_Recv(&current_term, 1, MPI_DOUBLE, i, TERM_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                sum += current_term;
-                if (current_term < EPSILON) {
-                    need_break = true;
-                    break;
-                }
-            }
-            for (int i = 1; i < np; i++) {
-                MPI_Send(&need_break, 1, MPI_INT, i, BREAK_TAG, MPI_COMM_WORLD);
-            }
-        }
-        else {
-            MPI_Send(&term, 1, MPI_DOUBLE, 0, TERM_TAG, MPI_COMM_WORLD);
-            MPI_Recv(&need_break, 1, MPI_INT, 0, BREAK_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-        }
-        if (need_break) {
-            break;
-        }
-    }
-    if (rank == 0) {
-        FILE* output_file = fopen(output_file_name, "w");
-        if (!output_file) {
-            fprintf(stderr, "Can't open output file! \n\n");
-            MPI_Abort(MPI_COMM_WORLD, 2);
-            return 2;
-        }
-        fprintf(output_file, "%.15lf\n", sum);
-        fprintf(output_file, "%.15lf\n", sin(exponent));
-        printf("last term %.1d\n", last_term_number);
+        write_double_to_file("out.txt", res);
     }
     MPI_Finalize();
     return 0;
