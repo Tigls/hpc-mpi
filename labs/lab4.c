@@ -6,7 +6,7 @@
 #define MATRIX_INPUT_FILE "matrix.txt"
 #define RESULT_FILE "det_result.txt"
 
-int main(int argc, char* argv[])
+int lab4(int argc, char* argv[])
 {
     /* Execution start time */
     clock_t start_clock;
@@ -21,6 +21,11 @@ int main(int argc, char* argv[])
 
     /* Source matrix. Used in process 0 only */
     double *matrix;
+    double *B;
+    double *Y;
+    double *X;
+    double *matrixLU_row;
+    double* l;
 
     /* Source matrix size */
     int n;
@@ -48,6 +53,7 @@ int main(int argc, char* argv[])
 
         /* Allocate matrix */
         matrix = (double*) calloc(n * n, sizeof(double));
+        B = (double*) calloc(n, sizeof(double));
 
         /* Total count of matrix elements for each process */
         int block_size = n * n / p;
@@ -57,6 +63,9 @@ int main(int argc, char* argv[])
             // row number:	i % n
             // column number:	i / n * p % n + i / block_size
             fscanf(file, "%lf", &matrix[i % n * n + i / n * p % n + i / block_size]);
+
+        for (int i = 0; i < n; i++)
+            fscanf(file, "%lf", &B[i]);
 
         /* Close file */
         fclose(file);
@@ -83,7 +92,7 @@ int main(int argc, char* argv[])
     {
         /* Array of coefficients for rows below pivot row*/
         const int l_size = n - pivot - 1;
-        double* l = (double*) calloc(l_size, sizeof(double));
+        l = (double*) calloc(l_size, sizeof(double));
 
         /* Determine process that contains pivot column */
         if (rank == pivot % p)
@@ -119,15 +128,53 @@ int main(int argc, char* argv[])
     }
 
     /* Calculate partial determinant value in each process using available columns */
-    double det = 1;
-    for (int pivot = rank; pivot < block_size; pivot += n + p)
-        det *= block[pivot];
+    double *matrixLU = NULL;
+    if (rank == 0) {
+        matrixLU = (double*) calloc(n * n, sizeof(double));
+    }
+    /* int num_col = n / p;
+    for (int i = 0; i < num_col; i++) {
+        MPI_Gather(
+                block + i * sizeof(double) * n,
+                block_size / num_col, MPI_DOUBLE,
+                matrixLU + i * sizeof(double) * n * n / num_col,
+                block_size / num_col,
+                MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    } */
+
+    MPI_Gather(block, block_size, MPI_DOUBLE, matrixLU, block_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     /* Write result to file */
     if (rank == 0)
     {
-        /* Reduce final determinant value to process 0 */
-        MPI_Reduce(MPI_IN_PLACE, &det, 1, MPI_DOUBLE, MPI_PROD, 0, MPI_COMM_WORLD);
+
+        matrixLU_row = (double*) calloc(n * n, sizeof(double));
+        Y = (double*) calloc(n, sizeof(double));
+        X = (double*) calloc(n, sizeof(double));
+
+        for (int i = 0; i < n * n; i++) {
+            matrixLU_row[i] = matrixLU[i % n * n + i / n * p % n + i / block_size];
+        }
+        //***** FINDING Y; LY=b*********//
+        for (int i = 0; i < n; i++) {
+            Y[i] = B[i];
+            for (int j = 0; j < i; j++) {
+                Y[i] -= l[i*j] * Y[j];
+            }
+        }
+        printf("\n\n[Y]: \n");
+        for (int i = 0; i < n; i++) {
+            printf("%9.3f", Y[i]);
+        }
+
+        //********** FINDING X; UX=Y***********//
+        for (int i = n - 1; i >= 0; i--) {
+            X[i] = Y[i];
+            for (int j = i + 1; j < n; j++) {
+                X[i] -= matrixLU_row[i*j] * X[j];
+            }
+            X[i] /= matrixLU_row[i*i];
+        }
 
         /* Calculate execution time in milliseconds*/
         clock_t milliseconds = (clock() - start_clock) * 1000 / CLOCKS_PER_SEC;
@@ -141,16 +188,16 @@ int main(int argc, char* argv[])
         }
 
         /* Write result */
-        fprintf(file, "Determinant:\t%f\n", det);
+        printf("\n\nVector [X]: \n");
+        for (int i = 0; i < n; i++) {
+            printf("%9.3f", X[i]);
+        }
         fprintf(file, "Number of processes:\t%d\n", p);
         fprintf(file, "Execution time:\t%ld milliseconds\n", milliseconds);
 
         /* Close file */
         fclose(file);
     }
-    else
-        /* Reduce final determinant value from other processes */
-        MPI_Reduce(&det, NULL, 1, MPI_DOUBLE, MPI_PROD, 0, MPI_COMM_WORLD);
 
     return MPI_Finalize();
 }

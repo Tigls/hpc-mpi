@@ -1,142 +1,219 @@
-#include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
-#include "linalg.h"
+#include <time.h>
+#include <mpi.h>
 
-/* Точність обчислення коренів */
-const double epsilon = 0.001;
-/* Функція обчислення наступного наближення ітераційного процесу Якобі */
-void jacobi_iteration(
-        int start_row, 				// Номер першого рядка частини матриці
-        struct my_matrix *mat_A_part, 		// Частина рядків матриці коефіціентів
-        struct my_vector *b, 			// Вектор вільних членів
-        struct my_vector *vec_prev_x, 		// Вектор попереднього наближення
-        struct my_vector *vec_next_x_part, 	// Частина вектору наступного наближення (встановлюється в функції)
-        double *residue_norm_part)  // Значення норми на попередньому кроці обчислень (встановлюється в функції)
+#define MATRIX_INPUT_FILE "matrix.txt"
+#define RESULT_FILE "result.txt"
+
+int lab3(int argc, char* argv[])
 {
-    /* Акумулятор значення норми даної частини обчислень */
-    double my_residue_norm_part = 0.0;
-    /* Поелементне обчислення частини вектору наступного наближення */
-    for(int i = 0; i < vec_next_x_part->size; i++)
-    {
-        double sum = 0.0;
-        for(int j = 0; j < mat_A_part->cols; j++)
-        {
-            if(i + start_row != j)
-            {
-                sum += mat_A_part->data[i * mat_A_part->cols + j] * vec_prev_x->data[j];
-            }
-        }
-        sum = b->data[i + start_row] - sum;
-        vec_next_x_part->data[i] = sum / mat_A_part->data[i * mat_A_part->cols + i + start_row];
+    /* Execution start time */
+    clock_t start_clock;
 
-        /* Обчислення норми на попередньому кроці */
-        sum = -sum + mat_A_part->data[i * mat_A_part->cols + i + start_row] *
-                     vec_prev_x->data[i + start_row];
-        my_residue_norm_part += sum * sum;
-    }
-    *residue_norm_part = my_residue_norm_part;
-}
-/* Основна функція */
-int main(int argc, char *argv[])
-{
-    const char *input_file_MA = "MA.txt";
-    const char *input_file_b = "b.txt";
-    const char *output_file_x = "x.txt";
-
-    /* Ініціалізація MPI */
+    /* MPI Initialization */
     MPI_Init(&argc, &argv);
 
-    /* Отримання загальної кількості задач та рангу поточної задачі */
-    int np, rank;
-    MPI_Comm_size(MPI_COMM_WORLD, &np);
+    /* Get total number of processes and current process rank */
+    int p, rank;
+    MPI_Comm_size(MPI_COMM_WORLD, &p);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    /* Зчитування даних в задачі 0 */
-    struct my_matrix *MA;
-    struct my_vector *b;
-    int N;
+    /* Source matrix. Used in process 0 only */
+    double *matrix;
+    double *B;
+    double *Y;
+    double *X;
+    double *matrixU_row;
+    double *matrixL_row;
+    double* l;
+    double* l_sum;
+
+    /* Source matrix size */
+    int n;
+
+    /* Read matrix in process 0 */
     if(rank == 0)
     {
-        MA = read_matrix(input_file_MA);
-        b = read_vector(input_file_b);
-        if(MA->rows != MA->cols) {
-            fatal_error("Matrix is not square!", 4);
-        }
-        if(MA->rows != b->size) {
-            fatal_error("Dimensions of matrix and vector don’t match!", 5);
-        }
-        N = b->size;
-    }
-    /* Розсилка всім задачам розмірності матриць та векторів */
-    MPI_Bcast(&N, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    /* Виділення пам’яті для зберігання вектора вільних членів */
-    if(rank != 0)
-    {
-        b = vector_alloc(N, .0);
-    }
-    /* Обчислення частини векторів та матриці, яка буде зберігатися в кожній
-     * задачі, вважаемо що N = k*np. Виділення пам’яті для зберігання частин
-     * векторів та матриць в кожній задачі та встановлення їх початкових значень */
-    int part = N / np;
-    struct my_matrix *MAh = matrix_alloc(part, N, .0);
-    struct my_vector *oldx = vector_alloc(N, .0);
-    struct my_vector *newx = vector_alloc(part, .0);
-    /* Розбиття вихідної матриці MA на частини по part рядків та розсилка частин
-    * у всі задачі. Звільнення пам’яті, виділеної для матриці МА. */
-    if(rank == 0)
-    {
-        MPI_Scatter(MA->data, N*part, MPI_DOUBLE, MAh->data, N*part, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        free(MA);
-    }
-    else
-    {
-        MPI_Scatter(NULL, 0, MPI_DATATYPE_NULL, MAh->data, N*part, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    }
-    /* Розсилка вектора вільних членів */
-    MPI_Bcast(b->data, N, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    /* Обчислення норми вектору вільних членів в задачі 0 та розсилка її значення
-    * у всі задачі */
-    double b_norm = 0.0;
-    if(rank == 0) {
-        for(int i = 0; i < b->size; i++) {
-            b_norm = b->data[i] * b->data[i];
-        }
-        b_norm = sqrt(b_norm);
-    }
-    MPI_Bcast(&b_norm, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    /* Значення критерію зупинки ітерації */
-    double last_stop_criteria;
-    /* Основний цикл ітерації Якобі */
-    for(int i = 0; i < 1000; i++)
-    {
-        double residue_norm_part;
-        double residue_norm;
-        jacobi_iteration(rank * part, MAh, b, oldx, newx, &residue_norm_part);
-        /* Обчислення сумарного значення нев’язки */
-        MPI_Allreduce(&residue_norm_part, &residue_norm, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-        residue_norm = sqrt(residue_norm);
-        /* Перевірка критерію зупинки ітерації. Оскільки на поточному кроці
-        * обчислюється значення норми для попереднього кроку, то результатом
-        * обчислення є дані попереднього кроку */
-        last_stop_criteria = residue_norm / b_norm;
-        if(last_stop_criteria < epsilon)
+        /* Open file for reading */
+        FILE *file = fopen(MATRIX_INPUT_FILE, "r");
+        if (file == NULL)
         {
-            break;
+            printf("Unable to open input file");
+            MPI_Abort(MPI_COMM_WORLD, 1);
         }
-        /* Збір значень поточного наближення вектору невідомих */
-        MPI_Allgather(newx->data, part, MPI_DOUBLE, oldx->data, part, MPI_DOUBLE, MPI_COMM_WORLD);
+
+        /* Read matrix size */
+        fscanf(file, "%d", &n);
+
+        /* Check if matrix size is a multiple number of processors */
+        if (n % p != 0)
+        {
+            printf("Matrix size must be a multiple number of processors");
+            MPI_Abort(MPI_COMM_WORLD, 2);
+        }
+
+        /* Allocate matrix */
+        matrix = (double*) calloc(n * n, sizeof(double));
+        B = (double*) calloc(n, sizeof(double));
+        l_sum = (double*) calloc(n * n, sizeof(double));;
+
+        /* Total count of matrix elements for each process */
+        int block_size = n * n / p;
+
+        /* Fill matrix with elements from file in order of columns cycles */
+        for (int i = 0; i < n * n; i++)
+            // row number:	i % n
+            // column number:	i / n * p % n + i / block_size
+            fscanf(file, "%lf", &matrix[i % n * n + i / n * p % n + i / block_size]);
+
+        for (int i = 0; i < n; i++)
+            fscanf(file, "%lf", &B[i]);
+
+        /* Close file */
+        fclose(file);
+
+        /* Initialize start time value */
+        start_clock = clock();
     }
-    /* Вивід результату */
-    if(rank == 0)
+
+    // Send matrix size to all processes
+    MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    /* Total count of matrix elements for each process */
+    int block_size = n * n / p;
+    double *block = (double*) calloc(block_size, sizeof(double));
+
+    /* Send a block of matrix elements to each process using "Cycles of rows" scattering */
+    if (rank == 0)
+        MPI_Scatter(matrix, block_size, MPI_DOUBLE, block, block_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    else
+        MPI_Scatter(NULL, 0, MPI_DATATYPE_NULL, block, block_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    /* Perform matrix LU decomposition */
+    for (int pivot = 0; pivot < n - 1; pivot++)
     {
-        write_vector(output_file_x, oldx);
+        /* Array of coefficients for rows below pivot row*/
+        const int l_size = n - pivot - 1;
+        l = (double*) calloc(l_size, sizeof(double));
+
+        /* Determine process that contains pivot column */
+        if (rank == pivot % p)
+        {
+            /* Offset of pivot column in the block */
+            int offset = pivot / p * n;
+
+            /* Check pivot for zero */
+            if (0 == block[offset + pivot])
+            {
+                printf("Zero pivot detected. Pivot element can not be zero");
+                MPI_Abort(MPI_COMM_WORLD, 3);
+            }
+
+            /* Fill array with coefficients values */
+            for (int i = 0; i < l_size; i++)
+                l[i] = block[offset + pivot + i + 1] / block[offset + pivot];
+        }
+
+        /* Send array of coefficients to all processes */
+        MPI_Bcast(l, l_size, MPI_DOUBLE, pivot % p, MPI_COMM_WORLD);
+        if (rank == 0) {
+            for (int i = 0; i < l_size; i++)
+                l_sum[n * pivot + i + (pivot + 1)] = l[i];
+        }
+
+
+        /* Subtract pivot row multiplied with corresponding coefficient from each row below pivot row
+         * Accept changes only for columns to the right of the pivot column */
+        for (int column = rank > pivot ? 0 : (pivot - rank) / p; column < n / p; column++)
+        {
+            /* Offset of current column in the block */
+            int offset = column * n;
+            /* Perform subtraction */
+            for (int i = 0; i < l_size; i++)
+                block[offset + pivot + i + 1] -= l[i] * block[offset + pivot];
+        }
     }
-    /* Повернення виділених ресурсів системі та фіналізація середовища MPI */
-    free(MAh);
-    free(oldx);
-    free(newx);
-    free(b);
+
+    /* Gather matrix data from all processes*/
+    double *matrixLU = NULL;
+    if (rank == 0) {
+        matrixLU = (double*) calloc(n * n, sizeof(double));
+    }
+
+    MPI_Gather(block, block_size, MPI_DOUBLE, matrixLU, block_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+    /* Write result to file */
+    if (rank == 0)
+    {
+
+        matrixU_row = (double*) calloc(n * n, sizeof(double));
+        matrixL_row = (double*) calloc(n * n, sizeof(double));
+        Y = (double*) calloc(n, sizeof(double));
+        X = (double*) calloc(n, sizeof(double));
+
+        for (int i = 0; i < n * n; i++) {
+            int a = i % n * n + i / n * p % n + i / block_size;
+            matrixU_row[i] = matrixLU[a];
+            matrixL_row[i] = l_sum[a];
+        }
+        printf("\nMatrix [U] \n");
+        for (int i = 0; i < n * n; i++) {
+            printf("%9.3f", matrixU_row[i]);
+            if ((i+1) % n == 0) {
+                printf("\n");
+            }
+        }
+        printf("\nMatrix [L]\n");
+        for (int i = 0; i < n * n; i++) {
+            printf("%9.3f", matrixL_row[i]);
+            if ((i+1) % n == 0) {
+                printf("\n");
+            }
+        }
+        //***** FINDING Y; LY=b*********//
+        for (int i = 0; i < n; i++) {
+            Y[i] = B[i];
+            for (int j = 0; j < i; j++) {
+                Y[i] -= matrixL_row[i * n + j] * Y[j];
+            }
+        }
+        printf("\n[Y]: \n");
+        for (int i = 0; i < n; i++) {
+            printf("%9.3f", Y[i]);
+        }
+
+        //********** FINDING X; UX=Y***********//
+        for (int i = n - 1; i >= 0; i--) {
+            X[i] = Y[i];
+            for (int j = i + 1; j < n; j++) {
+                X[i] -= matrixU_row[i * n + j] * X[j];
+            }
+            X[i] /= matrixU_row[i * n + i];
+        }
+
+        /* Calculate execution time in milliseconds*/
+        clock_t milliseconds = (clock() - start_clock) * 1000 / CLOCKS_PER_SEC;
+
+        /* Create file */
+        FILE *file = fopen(RESULT_FILE, "w");
+        if (file == NULL)
+        {
+            printf("Failed to open output result file");
+            MPI_Abort(MPI_COMM_WORLD, 4);
+        }
+
+        /* Write result */
+        printf("\n\n[X]: \n");
+        for (int i = 0; i < n; i++) {
+            printf("%9.3f", X[i]);
+        }
+        fprintf(file, "Number of processes:\t%d\n", p);
+        fprintf(file, "Execution time:\t%ld milliseconds\n", milliseconds);
+
+        /* Close file */
+        fclose(file);
+    }
+
     return MPI_Finalize();
 }
