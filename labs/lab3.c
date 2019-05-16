@@ -6,7 +6,7 @@
 #define MATRIX_INPUT_FILE "matrix.txt"
 #define RESULT_FILE "result.txt"
 
-int lab3(int argc, char* argv[])
+int main(int argc, char* argv[])
 {
     /* Execution start time */
     clock_t start_clock;

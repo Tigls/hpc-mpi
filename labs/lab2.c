@@ -13,7 +13,7 @@ bool check_Runge(double I2, double I, double epsilon)
     return (fabs(I2 - I) / 3.) < epsilon;
 }
 
-double integrate_left_rectangle(double start, double finish, double epsilon)
+double integrate_parabola_method(double start, double finish, double epsilon)
 {
     int num_iterations = 1;
     double last_res = 0.;
@@ -74,7 +74,7 @@ int main(int argc, char* argv[])
     double finish = input[1];
     double epsilon = input[2];
     double step = (finish - start) / np;
-    double res = integrate_left_rectangle(start + rank * step, start +
+    double res = integrate_parabola_method(start + rank * step, start +
                                                                (rank + 1) * step, epsilon / np);
     if (rank != 0)
     {
