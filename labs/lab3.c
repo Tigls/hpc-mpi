@@ -111,8 +111,11 @@ int main(int argc, char* argv[])
             }
 
             /* Fill array with coefficients values */
-            for (int i = 0; i < l_size; i++)
+            for (int i = 0; i < l_size; i++) {
                 l[i] = block[offset + pivot + i + 1] / block[offset + pivot];
+                printf("1arg rank %d arg %2.0f", rank, block[offset + pivot + i + 1]);
+                printf("2arg rank %d arg %2.0f", rank, block[offset + pivot]);
+            }
         }
 
         /* Send array of coefficients to all processes */

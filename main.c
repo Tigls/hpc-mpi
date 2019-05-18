@@ -47,43 +47,84 @@ int main(int argc, char *argv[])
     /* Розсилка рядків матриці з задачі 0 в інші задачі */
     if (rank == 0) {
         MPI_Scatter(MA -> data, n * part, MPI_DOUBLE, MAh -> data, n * part, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        free(MA);
+        // free(MA);
     } else {
         MPI_Scatter(NULL, 0, MPI_DATATYPE_NULL, MAh->data, n * part, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        // free(MA);
     }
-    free(MA);
 
-    /* Поточне значення вектору l_i */
+
     struct my_vector *current_l = vector_alloc(n, .0);
-    /* Частина рядків матриці L */
+    struct my_vector *current_l1 = vector_alloc(n, .0);
     struct my_matrix *MLh = matrix_alloc(n, part, .0);
     /* Основний цикл ітерації (кроки) */
+    for(int k = 0; k < n-1; k++) {
+        if(rank == k / part) {
+            for(int i = k + 1; i < n; i++)
+                MAh->data[k * n + i] /= MAh->data[k*n + k]
+        }
+        MPI_Bcast(&MAh[k * n+ k + 1], n-k-1, MPI_DOUBLE, k / part, MPI_COMM_WORLD);
+        for(int i = k + 1; i < n; i++)
+            if(rank == k / part) {
+                for(int j = k + 1; j < n; j++) {
+                    MAh->data[i*n +j] -= MAh->data[i*n +k] * MAh->data[k*n + j];
+                    printf("matriax %2.2f", MAh->data[i*n+ j]);
+                }
+            }
+    }
+
     for(int pivot = 0; pivot < n - 1; pivot++)
     {
-        /* Вибір задачі, що містить стовпець з ведучім елементом та обчислення
-        * поточних значень вектору l_i */
-        if (pivot / part == rank)
-        {
-            int row_index = pivot;
-            MLh -> data[pivot * part + row_index] = 1.;
-            for(int i = pivot + 1; i < n; i++)
-            {
-                MLh -> data[i * part + row_index] = MAh -> data[i * part + row_index] /
-                                                    MAh -> data[pivot * part + row_index];
-            }
-            for(int i = 0; i < n; i++)
-            {
-                current_l -> data[i] = MLh -> data[i * part + row_index];
+        double main_pivot;
+        int row_index = pivot % part;
+        int offset = row_index * n;
+
+        MLh -> data[offset + pivot] = 1.;
+        if (MAh -> data[offset + pivot] == 0) {
+            printf("Zero pivot detected. Pivot element can not be zero");
+            MPI_Abort(MPI_COMM_WORLD, 3);
+        }
+
+        if (rank == pivot / part) {
+            main_pivot = MAh->data[offset + pivot];
+        }
+        MPI_Bcast(&main_pivot, 1, MPI_DOUBLE, pivot / part, MPI_COMM_WORLD);
+        // Calc L coeficients
+        for(int i = pivot + 1; i < n; i++) {
+            if (rank == i % p){
+                int k = (i % part) * n;
+                MLh->data[k + pivot] = MAh->data[k + pivot] / main_pivot;
+                if (pivot == 0) {
+                    //printf("1arg MAL %2.3f\n", MLh->data[k + pivot]);
+                }
             }
         }
-        /* Розсилка поточних значень l_i */
-        MPI_Bcast(current_l, 1, vector_struct, pivot % p, MPI_COMM_WORLD);
-        /* Модифікація рядків матриці МА відповідно до поточного l_i */
-        for(int i = pivot + 1; i < n; i++)
-        {
-            for(int j = 0; j < part; j++)
-            {
-                MAh -> data[i * part + j] -= MAh -> data[pivot * part + j] * current_l -> data[i];
+        // Copy L coeficients to l-vector
+        for(int i = 0; i < n; i++) {
+            if(rank == i % p) {
+                int k = (i % part) * n + pivot;
+                current_l->data[i] = MLh->data[k];
+                if(pivot ==0) {
+                    //printf("rank %d l-vector %2.5f\n", rank, current_l->data[i]);
+                }
+            }
+        }
+        double * current_l2 = (double*) calloc(n, sizeof(double));
+        for (int i = 0; i < n; i++) {
+            MPI_Allgather(&MLh[1], 1, MPI_DOUBLE, current_l2, 1, MPI_DOUBLE, MPI_COMM_WORLD);
+        }
+        if(rank == 2) {
+            for(int i = 0; i <n; i++) {
+                printf("rank %d l-vecot %2.2f\n", rank, current_l[i]);
+            }
+        }
+        for(int i = 0; i < n; i++) {
+            if (rank == i % p) {
+                int k = (i % part) * n + pivot;
+                MAh->data[k] -= MAh->data[k] * current_l->data[i];
+                if(pivot ==0) {
+                    //printf("final matrix %2.2f\n", MAh->data[k]);
+                }
             }
         }
     }
@@ -92,8 +133,8 @@ int main(int argc, char *argv[])
     double prod = 1.;
     for(int i = 0; i < part; i++)
     {
-        int row_index = i * p + rank;
-        prod *= MAh -> data[row_index * part + i];
+        int row_index = i % part + rank;
+        prod *= MAh -> data[row_index*n + i];
     }
     /* Згортка добутків елементів головної діагоналі та вивід результату в задачі 0 */
     if(rank == 0)
