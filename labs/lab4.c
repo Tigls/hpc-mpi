@@ -1,203 +1,129 @@
+/*
+ * Лабораторна робота 4, варіант 9
+ * з дисціпліни Високопродуктивні обчислення
+ * Хорт Дмитро
+ * ФІОТ 5 курс, група ІП-з82мп
+ * 05.2019
+*/
+#include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
-#include <mpi.h>
+#include <math.h>
+#include "./labs/linalg.h"
 
-#define MATRIX_INPUT_FILE "matrix.txt"
-#define RESULT_FILE "det_result.txt"
+const char *input_file_MA = "input.txt";
+void forward_elimination (double **origin, double *master_row, size_t n) {
+    if(**origin == 0)
+        return;
+    double k = **origin / master_row[0];
+    for (int i = 0; i < n; i++) {
+        (*origin)[i] = (*origin)[i] - k * master_row[i];
+    }
+    **origin = k;
+}
 
-int lab4(int argc, char* argv[])
+/* Основна функція (обчислення визначника) */
+int main(int argc, char *argv[])
 {
-    /* Execution start time */
-    clock_t start_clock;
-
-    /* MPI Initialization */
     MPI_Init(&argc, &argv);
-
-    /* Get total number of processes and current process rank */
     int p, rank;
     MPI_Comm_size(MPI_COMM_WORLD, &p);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-    /* Source matrix. Used in process 0 only */
-    double *matrix;
-    double *B;
-    double *Y;
-    double *X;
-    double *matrixLU_row;
-    double* l;
-
-    /* Source matrix size */
+    struct my_matrix *MA;
     int n;
 
-    /* Read matrix in process 0 */
+    /* Зчитування матриці з файлу */
     if(rank == 0)
     {
-        /* Open file for reading */
-        FILE *file = fopen(MATRIX_INPUT_FILE, "r");
-        if (file == NULL)
-        {
-            printf("Unable to open input file");
-            MPI_Abort(MPI_COMM_WORLD, 1);
+        MA = read_matrix(input_file_MA);
+        if(MA -> rows != MA -> cols) {
+            fatal_error("Matrix is not square!", 4);
         }
-
-        /* Read matrix size */
-        fscanf(file, "%d", &n);
-
-        /* Check if matrix size is a multiple number of processors */
-        if (n % p != 0)
-        {
-            printf("Matrix size must be a multiple number of processors");
-            MPI_Abort(MPI_COMM_WORLD, 2);
-        }
-
-        /* Allocate matrix */
-        matrix = (double*) calloc(n * n, sizeof(double));
-        B = (double*) calloc(n, sizeof(double));
-
-        /* Total count of matrix elements for each process */
-        int block_size = n * n / p;
-
-        /* Fill matrix with elements from file in order of columns cycles */
-        for (int i = 0; i < n * n; i++)
-            // row number:	i % n
-            // column number:	i / n * p % n + i / block_size
-            fscanf(file, "%lf", &matrix[i % n * n + i / n * p % n + i / block_size]);
-
-        for (int i = 0; i < n; i++)
-            fscanf(file, "%lf", &B[i]);
-
-        /* Close file */
-        fclose(file);
-
-        /* Initialize start time value */
-        start_clock = clock();
+        n = MA -> rows;
     }
 
-    // Send matrix size to all processes
+    /* Розсилка всім задачам розмірності матриць та векторів */
     MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-    /* Total count of matrix elements for each process */
-    int block_size = n * n / p;
-    double *block = (double*) calloc(block_size, sizeof(double));
+    int part = n / p; // кількість рядків, що зберігається в даній задачі
+    struct my_matrix *MAh = matrix_alloc(n, part, .0);
 
-    /* Send a block of matrix elements to each process using "Cycles of rows" scattering */
-    if (rank == 0)
-        MPI_Scatter(matrix, block_size, MPI_DOUBLE, block, block_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    else
-        MPI_Scatter(NULL, 0, MPI_DATATYPE_NULL, block, block_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    /* Perform matrix LU decomposition */
-    for (int pivot = 0; pivot < n - 1; pivot++)
-    {
-        /* Array of coefficients for rows below pivot row*/
-        const int l_size = n - pivot - 1;
-        l = (double*) calloc(l_size, sizeof(double));
-
-        /* Determine process that contains pivot column */
-        if (rank == pivot % p)
-        {
-            /* Offset of pivot column in the block */
-            int offset = pivot / p * n;
-
-            /* Check pivot for zero */
-            if (0 == block[offset + pivot])
-            {
-                printf("Zero pivot detected. Pivot element can not be zero");
-                MPI_Abort(MPI_COMM_WORLD, 3);
-            }
-
-            /* Fill array with coefficients values */
-            for (int i = 0; i < l_size; i++)
-                l[i] = block[offset + pivot + i + 1] / block[offset + pivot];
-        }
-
-        /* Send array of coefficients to all processes */
-        MPI_Bcast(l, l_size, MPI_DOUBLE, pivot % p, MPI_COMM_WORLD);
-
-        /* Subtract pivot row multiplied with corresponding coefficient from each row below pivot row
-         * Accept changes only for columns to the right of the pivot column */
-        for (int column = rank > pivot ? 0 : (pivot - rank) / p; column < n / p; column++)
-        {
-            /* Offset of current column in the block */
-            int offset = column * n;
-            /* Perform subtraction */
-            for (int i = 0; i < l_size; i++)
-                block[offset + pivot + i + 1] -= l[i] * block[offset + pivot];
-        }
-    }
-
-    /* Calculate partial determinant value in each process using available columns */
-    double *matrixLU = NULL;
+    /* Розсилка рядків матриці з задачі 0 в інші задачі */
     if (rank == 0) {
-        matrixLU = (double*) calloc(n * n, sizeof(double));
+        MPI_Scatter(MA->data, n * part, MPI_DOUBLE, MAh->data, n * part, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    } else {
+        MPI_Scatter(NULL, 0, MPI_DATATYPE_NULL, MAh->data, n * part, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
-    /* int num_col = n / p;
-    for (int i = 0; i < num_col; i++) {
-        MPI_Gather(
-                block + i * sizeof(double) * n,
-                block_size / num_col, MPI_DOUBLE,
-                matrixLU + i * sizeof(double) * n * n / num_col,
-                block_size / num_col,
-                MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    } */
 
-    MPI_Gather(block, block_size, MPI_DOUBLE, matrixLU, block_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    double * pivot_row = (double*) calloc(n, sizeof(double));
+    int pivot = 0;
 
-    /* Write result to file */
-    if (rank == 0)
+    /* LU-розклад */
+    for(int i = 0; i < n - 1; i++, pivot++)
     {
+        int row_index = pivot % part;
+        int offset = row_index * n;
 
-        matrixLU_row = (double*) calloc(n * n, sizeof(double));
-        Y = (double*) calloc(n, sizeof(double));
-        X = (double*) calloc(n, sizeof(double));
-
-        for (int i = 0; i < n * n; i++) {
-            matrixLU_row[i] = matrixLU[i % n * n + i / n * p % n + i / block_size];
+        /* Перевірка діагоналі на нульові елементи */
+        if (MAh -> data[offset + pivot] == 0) {
+            printf("Zero pivot detected. Pivot element can not be zero");
+            MPI_Abort(MPI_COMM_WORLD, 3);
         }
-        //***** FINDING Y; LY=b*********//
-        for (int i = 0; i < n; i++) {
-            Y[i] = B[i];
-            for (int j = 0; j < i; j++) {
-                Y[i] -= l[i*j] * Y[j];
+
+
+        /* Розсилка ведучого рядка */
+        if (rank == pivot / part) {
+            for (int r = 0; r < n; r++) {
+                pivot_row[r] = MAh->data[offset+r];
+            }
+
+        }
+        MPI_Bcast(pivot_row, n, MPI_DOUBLE, pivot / part, MPI_COMM_WORLD);
+
+
+        /* Застосування методу Гаусса */
+        for(int j = pivot + 1; j < n; j++) {
+            if (rank == j / part){
+                int offset1 = (j % part) * n;
+                double *save = &MAh->data[offset1 + pivot];
+                forward_elimination(&save, &pivot_row[pivot], n - pivot);
             }
         }
-        printf("\n\n[Y]: \n");
-        for (int i = 0; i < n; i++) {
-            printf("%9.3f", Y[i]);
-        }
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
 
-        //********** FINDING X; UX=Y***********//
-        for (int i = n - 1; i >= 0; i--) {
-            X[i] = Y[i];
-            for (int j = i + 1; j < n; j++) {
-                X[i] -= matrixLU_row[i*j] * X[j];
+    // Вивід на LU-матриці в термінал
+    double *LU_matrix = (double *)calloc(n*n, sizeof(double));
+    MPI_Allgather(&MAh->data, n * part, MPI_DOUBLE, LU_matrix, n * part, MPI_DOUBLE, MPI_COMM_WORLD);
+    if (rank == 0) {
+        printf("LU-Matrix\n");
+        for (int i = 0; i < n; i++) {
+            for (int j = 0; j < n; j++) {
+                printf("%2.2f ", LU_matrix[i*n + j]);
             }
-            X[i] /= matrixLU_row[i*i];
+            printf("\n");
         }
+    }
 
-        /* Calculate execution time in milliseconds*/
-        clock_t milliseconds = (clock() - start_clock) * 1000 / CLOCKS_PER_SEC;
+    MPI_Barrier(MPI_COMM_WORLD);
 
-        /* Create file */
-        FILE *file = fopen(RESULT_FILE, "w");
-        if (file == NULL)
-        {
-            printf("Failed to open output result file");
-            MPI_Abort(MPI_COMM_WORLD, 4);
+    /* Обислення детермінанта */
+    double prod = 1.;
+    for (int i = 0; i < n; i++) {
+        if (rank == i / part) {
+            prod *= MAh->data[(i % part) * n + i];
         }
+    }
 
-        /* Write result */
-        printf("\n\nVector [X]: \n");
-        for (int i = 0; i < n; i++) {
-            printf("%9.3f", X[i]);
-        }
-        fprintf(file, "Number of processes:\t%d\n", p);
-        fprintf(file, "Execution time:\t%ld milliseconds\n", milliseconds);
-
-        /* Close file */
-        fclose(file);
+    /* Згортка добутків елементів головної діагоналі та вивід результату в задачі 0 */
+    if(rank == 0) {
+        MPI_Reduce(MPI_IN_PLACE, &prod, 1, MPI_DOUBLE, MPI_PROD, 0, MPI_COMM_WORLD);
+        printf("\nDeterminant - %2.1f", prod);
+    }
+    else {
+        MPI_Reduce(&prod, NULL, 1, MPI_DOUBLE, MPI_PROD, 0, MPI_COMM_WORLD);
     }
 
     return MPI_Finalize();
 }
+

@@ -7,6 +7,6 @@ include_directories(SYSTEM ${MPI_INCLUDE_PATH})
 add_executable(
         test
         main.c
-        labs/lab3.c labs/lab4.c labs/linalg.c labs/linalg.h)
+        labs/linalg.c labs/linalg.h)
 
 target_link_libraries(test ${MPI_C_LIBRARIES} ${MPI_C_LINK_FLAGS} m)
