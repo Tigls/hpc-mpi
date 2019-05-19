@@ -1,3 +1,11 @@
+/*
+ * Лабораторна робота 2, варіант 9
+ * з дисціпліни Високопродуктивні обчислення
+ * Хорт Дмитро
+ * ФІОТ 5 курс, група ІП-з82мп
+ * 05.2019
+*/
+
 #include <stdio.h>
 #include <math.h>
 #include <stdbool.h>
@@ -13,6 +21,7 @@ bool check_Runge(double I2, double I, double epsilon)
     return (fabs(I2 - I) / 3.) < epsilon;
 }
 
+/* Інтегрування методом парабол */
 double integrate_parabola_method(double start, double finish, double epsilon)
 {
     int num_iterations = 1;
