@@ -16,14 +16,15 @@
 
 int main(int argc, char* argv[])
 {
+    clock_t start_clock;
     MPI_Init(&argc, &argv);
-
     int p, rank;
     MPI_Comm_size(MPI_COMM_WORLD, &p);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
     /* Ініціалізація змінних */
     double *matrix;
+    double *matrix_col;
     double *B;
     double *Y;
     double *X;
@@ -54,6 +55,7 @@ int main(int argc, char* argv[])
 
         /* Виділення пам'яті під вектора та масиви */
         matrix = (double*) calloc(n * n, sizeof(double));
+        matrix_col = (double*) calloc(n * n, sizeof(double));
         B = (double*) calloc(n, sizeof(double));
         l_sum = (double*) calloc(n * n, sizeof(double));;
 
@@ -61,15 +63,19 @@ int main(int argc, char* argv[])
         int block_size = n * n / p;
 
         /* Заповнюємо матрицю елементами циклічно по стовпчикам */
-        for (int i = 0; i < n * n; i++)
+        for (int i = 0; i < n * n; i++) {
+            fscanf(file, "%lf", &matrix[i]);
+        }
+        for (int i = 0; i < n * n; i++) {
             // номер рядка:	i % n
             // номер колонки:	i / n * p % n + i / block_size
-            fscanf(file, "%lf", &matrix[i % n * n + i / n * p % n + i / block_size]);
-
+            matrix_col[i] = matrix[i % n * n + i / n * p % n + i / block_size];
+        }
         for (int i = 0; i < n; i++)
             fscanf(file, "%lf", &B[i]);
 
         fclose(file);
+        start_clock = clock();
     }
 
     // Розсилка матриці усім процесам
@@ -81,7 +87,7 @@ int main(int argc, char* argv[])
 
     /* Розсилка елементів процесам */
     if (rank == 0)
-        MPI_Scatter(matrix, block_size, MPI_DOUBLE, block, block_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Scatter(matrix_col, block_size, MPI_DOUBLE, block, block_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     else
         MPI_Scatter(NULL, 0, MPI_DATATYPE_NULL, block, block_size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
@@ -135,7 +141,8 @@ int main(int argc, char* argv[])
     /* Вивід результатів на знаходженяя рішення СЛАР */
     if (rank == 0)
     {
-
+        clock_t milliseconds = (clock() - start_clock);
+        printf("\nExecution time:\t%ld mikroseconds\n", milliseconds);
         matrixU_row = (double*) calloc(n * n, sizeof(double));
         matrixL_row = (double*) calloc(n * n, sizeof(double));
         Y = (double*) calloc(n, sizeof(double));
@@ -143,8 +150,8 @@ int main(int argc, char* argv[])
 
         for (int i = 0; i < n * n; i++) {
             int a = i % n * n + i / n * p % n + i / block_size;
-            matrixU_row[i] = matrixLU[a];
-            matrixL_row[i] = l_sum[a];
+            matrixU_row[a] = matrixLU[i];
+            matrixL_row[i % n*n + i/n] = l_sum[i];
         }
         printf("\nMatrix [U] \n");
         for (int i = 0; i < n * n; i++) {

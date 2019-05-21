@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 #include "./labs/linalg.h"
 
 const char *input_file_MA = "input.txt";
@@ -25,6 +26,7 @@ void forward_elimination (double **origin, double *master_row, size_t n) {
 /* Основна функція (обчислення визначника) */
 int main(int argc, char *argv[])
 {
+    clock_t start_clock;
     MPI_Init(&argc, &argv);
     int p, rank;
     MPI_Comm_size(MPI_COMM_WORLD, &p);
@@ -40,6 +42,7 @@ int main(int argc, char *argv[])
             fatal_error("Matrix is not square!", 4);
         }
         n = MA -> rows;
+        start_clock = clock();
     }
 
     /* Розсилка всім задачам розмірності матриць та векторів */
@@ -96,6 +99,8 @@ int main(int argc, char *argv[])
     double *LU_matrix = (double *)calloc(n*n, sizeof(double));
     MPI_Allgather(&MAh->data, n * part, MPI_DOUBLE, LU_matrix, n * part, MPI_DOUBLE, MPI_COMM_WORLD);
     if (rank == 0) {
+        clock_t milliseconds = (clock() - start_clock);
+        printf("\nExecution time:\t%ld mikroseconds\n", milliseconds);
         printf("LU-Matrix\n");
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {

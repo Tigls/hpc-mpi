@@ -1,10 +1,18 @@
+/*
+ * Лабораторна робота 4, варіант 9
+ * з дисціпліни Високопродуктивні обчислення
+ * Хорт Дмитро
+ * ФІОТ 5 курс, група ІП-з82мп
+ * 05.2019
+*/
 #include <mpi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 #include "./labs/linalg.h"
 
-const char *input_file_MA = "MA.txt";
+const char *input_file_MA = "input.txt";
 void forward_elimination (double **origin, double *master_row, size_t n) {
     if(**origin == 0)
         return;
@@ -18,6 +26,7 @@ void forward_elimination (double **origin, double *master_row, size_t n) {
 /* Основна функція (обчислення визначника) */
 int main(int argc, char *argv[])
 {
+    clock_t start_clock;
     MPI_Init(&argc, &argv);
     int p, rank;
     MPI_Comm_size(MPI_COMM_WORLD, &p);
@@ -33,6 +42,7 @@ int main(int argc, char *argv[])
             fatal_error("Matrix is not square!", 4);
         }
         n = MA -> rows;
+        start_clock = clock();
     }
 
     /* Розсилка всім задачам розмірності матриць та векторів */
@@ -57,13 +67,6 @@ int main(int argc, char *argv[])
         int row_index = pivot % part;
         int offset = row_index * n;
 
-        /* Перевірка діагоналі на нульові елементи */
-        if (MAh -> data[offset + pivot] == 0) {
-            printf("Zero pivot detected. Pivot element can not be zero");
-            MPI_Abort(MPI_COMM_WORLD, 3);
-        }
-
-
         /* Розсилка ведучого рядка */
         if (rank == pivot / part) {
             for (int r = 0; r < n; r++) {
@@ -82,13 +85,15 @@ int main(int argc, char *argv[])
                 forward_elimination(&save, &pivot_row[pivot], n - pivot);
             }
         }
-        MPI_Barrier(MPI_COMM_WORLD);
+
     }
 
     // Вивід на LU-матриці в термінал
     double *LU_matrix = (double *)calloc(n*n, sizeof(double));
     MPI_Allgather(&MAh->data, n * part, MPI_DOUBLE, LU_matrix, n * part, MPI_DOUBLE, MPI_COMM_WORLD);
     if (rank == 0) {
+        clock_t milliseconds = (clock() - start_clock);
+        printf("\nExecution time:\t%ld mikroseconds\n", milliseconds);
         printf("LU-Matrix\n");
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {
@@ -98,7 +103,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    MPI_Barrier(MPI_COMM_WORLD);
+    //MPI_Barrier(MPI_COMM_WORLD);
 
     /* Обислення детермінанта */
     double prod = 1.;
@@ -109,13 +114,11 @@ int main(int argc, char *argv[])
     }
 
     /* Згортка добутків елементів головної діагоналі та вивід результату в задачі 0 */
-    if(rank == 0)
-    {
+    if(rank == 0) {
         MPI_Reduce(MPI_IN_PLACE, &prod, 1, MPI_DOUBLE, MPI_PROD, 0, MPI_COMM_WORLD);
         printf("\nDeterminant - %2.1f", prod);
     }
-    else
-    {
+    else {
         MPI_Reduce(&prod, NULL, 1, MPI_DOUBLE, MPI_PROD, 0, MPI_COMM_WORLD);
     }
 
