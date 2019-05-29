@@ -45,7 +45,7 @@ int main(int argc, char* argv[]) {
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     int np;
     MPI_Comm_size(MPI_COMM_WORLD, &np);
-    double x;
+    double x = 0;
     if (rank == 0)
     {
         FILE *input_file = fopen(input_file_name, "r");
@@ -69,20 +69,19 @@ int main(int argc, char* argv[]) {
 
     double sum = .0;
     double sum_temp = .0;
+    int need_break = false;
+    double element = 0;
 
     for (int step = rank+1; step < 100000; step += np) {
-        double element = calc_series_term(step, x);
-        int need_break = false;
+        element = calc_series_term(step, x);
         sum_temp += element;
-        if (rank == 0) {
-            sum += sum_temp;
-        }
-        if (fabs(element) < EPSILON){
+        if (fabs(element) < EPSILON) {
             need_break = true;
             MPI_Bcast(&need_break, 1, MPI_INT, rank, MPI_COMM_WORLD);
         }
-        if (need_break)
+        if (need_break) {
             break;
+        }
     }
     MPI_Reduce(&sum_temp, &sum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     if (rank == 0) {

@@ -1,127 +1,95 @@
 /*
- * Лабораторна робота 4, варіант 9
+ * Лабораторна робота 1, варіант 9
  * з дисціпліни Високопродуктивні обчислення
  * Хорт Дмитро
  * ФІОТ 5 курс, група ІП-з82мп
  * 05.2019
 */
+
 #include <mpi.h>
-#include <stdio.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <stdbool.h>
 #include <math.h>
 #include <time.h>
-#include "./labs/linalg.h"
 
-const char *input_file_MA = "input.txt";
-void forward_elimination (double **origin, double *master_row, size_t n) {
-    if(**origin == 0)
-        return;
-    double k = **origin / master_row[0];
-    for (int i = 0; i < n; i++) {
-        (*origin)[i] = (*origin)[i] - k * master_row[i];
+const double EPSILON = 1E-8;
+const int VALUE_TAG = 1;
+const char* input_file_name = "input.txt";
+
+double factorial(int value) {
+    if (value < 0) {
+        return NAN;
     }
-    **origin = k;
+    else if (value == 0) {
+        return 1;
+    }
+    else {
+        double fact = 1;
+        for (int i = 2; i <= value; i++) {
+            fact *= i;
+        }
+        return fact;
+    }
 }
 
-/* Основна функція (обчислення визначника) */
-int main(int argc, char *argv[])
-{
+double calc_series_term(int term_number, double value) {
+    int k = 2 * term_number + 1;
+    return (pow(-1, term_number) / factorial(k)) * pow(value, k);
+}
+
+int main(int argc, char* argv[]) {
     clock_t start_clock;
     MPI_Init(&argc, &argv);
-    int p, rank;
-    MPI_Comm_size(MPI_COMM_WORLD, &p);
+    int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    struct my_matrix *MA;
-    int n;
-
-    /* Зчитування матриці з файлу */
-    if(rank == 0)
+    int np;
+    MPI_Comm_size(MPI_COMM_WORLD, &np);
+    double x = 0;
+    if (rank == 0)
     {
-        MA = read_matrix(input_file_MA);
-        if(MA -> rows != MA -> cols) {
-            fatal_error("Matrix is not square!", 4);
+        FILE *input_file = fopen(input_file_name, "r");
+        if (!input_file)
+        {
+            fprintf(stderr, "Can't open input file!\n\n");
+            MPI_Abort(MPI_COMM_WORLD, 1);
+            return 1;
         }
-        n = MA -> rows;
+        fscanf(input_file, "%lf", &x);
+        fclose(input_file);
         start_clock = clock();
     }
-
-    /* Розсилка всім задачам розмірності матриць та векторів */
-    MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
-
-    int part = n / p; // кількість рядків, що зберігається в даній задачі
-    struct my_matrix *MAh = matrix_alloc(n, part, .0);
-
-    /* Розсилка рядків матриці з задачі 0 в інші задачі */
-    if (rank == 0) {
-        MPI_Scatter(MA->data, n * part, MPI_DOUBLE, MAh->data, n * part, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    } else {
-        MPI_Scatter(NULL, 0, MPI_DATATYPE_NULL, MAh->data, n * part, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    }
-
-    double * pivot_row = (double*) calloc(n, sizeof(double));
-    int pivot = 0;
-
-    /* LU-розклад */
-    for(int i = 0; i < n - 1; i++, pivot++)
+    if (rank == 0)
     {
-        int row_index = pivot % part;
-        int offset = row_index * n;
-
-        /* Розсилка ведучого рядка */
-        if (rank == pivot / part) {
-            for (int r = 0; r < n; r++) {
-                pivot_row[r] = MAh->data[offset+r];
-            }
-
-        }
-        MPI_Bcast(pivot_row, n, MPI_DOUBLE, pivot / part, MPI_COMM_WORLD);
-
-
-        /* Застосування методу Гаусса */
-        for(int j = pivot + 1; j < n; j++) {
-            if (rank == j / part){
-                int offset1 = (j % part) * n;
-                double *save = &MAh->data[offset1 + pivot];
-                forward_elimination(&save, &pivot_row[pivot], n - pivot);
-            }
-        }
-
+        for (int i = 1; i < np; i++)
+            MPI_Send(&x, 1, MPI_DOUBLE, i, VALUE_TAG, MPI_COMM_WORLD);
     }
+    else
+        MPI_Recv(&x, 1, MPI_DOUBLE, 0, VALUE_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-    // Вивід на LU-матриці в термінал
-    double *LU_matrix = (double *)calloc(n*n, sizeof(double));
-    MPI_Allgather(&MAh->data, n * part, MPI_DOUBLE, LU_matrix, n * part, MPI_DOUBLE, MPI_COMM_WORLD);
+    double sum = .0;
+    double sum_temp = .0;
+    int need_break = false;
+    double element = 0;
+
+    for (int step = rank+1; step < 100000; step += np) {
+        element = calc_series_term(step, x);
+        sum_temp += element;
+        if (fabs(element) < EPSILON) {
+            need_break = true;
+            MPI_Bcast(&need_break, 1, MPI_INT, rank, MPI_COMM_WORLD);
+        }
+        if (need_break) {
+            break;
+        }
+    }
+    MPI_Reduce(&sum_temp, &sum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     if (rank == 0) {
         clock_t milliseconds = (clock() - start_clock);
         printf("\nExecution time:\t%ld mikroseconds\n", milliseconds);
-        printf("LU-Matrix\n");
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j < n; j++) {
-                printf("%2.2f ", LU_matrix[i*n + j]);
-            }
-            printf("\n");
-        }
+        printf("\n%.15lf sin(%2.2f) lab1\n", sum+x, x);
+        printf("\n%.15lf sin(%2.2f) math.h\n", sin(x), x);
     }
-
-    //MPI_Barrier(MPI_COMM_WORLD);
-
-    /* Обислення детермінанта */
-    double prod = 1.;
-    for (int i = 0; i < n; i++) {
-        if (rank == i / part) {
-            prod *= MAh->data[(i % part) * n + i];
-        }
-    }
-
-    /* Згортка добутків елементів головної діагоналі та вивід результату в задачі 0 */
-    if(rank == 0) {
-        MPI_Reduce(MPI_IN_PLACE, &prod, 1, MPI_DOUBLE, MPI_PROD, 0, MPI_COMM_WORLD);
-        printf("\nDeterminant - %2.1f", prod);
-    }
-    else {
-        MPI_Reduce(&prod, NULL, 1, MPI_DOUBLE, MPI_PROD, 0, MPI_COMM_WORLD);
-    }
-
-    return MPI_Finalize();
+    MPI_Finalize();
+    return 0;
 }
-
